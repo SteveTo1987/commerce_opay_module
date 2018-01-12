@@ -1,0 +1,220 @@
+<?php
+
+function commerce_opay_menu() {
+	//drupal_add_js('jQuery(document).ready(function () { console.log("Hello!"); });', 'inline');     //Print Log in browser console to debug
+	
+	// Add a menu callback for opay's notification on operation processing.
+	$items['commerce_opay/notify'] = array(
+		'page callback' => 'commerce_opay_process_notify',
+		'page arguments' => array(),
+		'access callback' => TRUE,
+		'type' => MENU_CALLBACK,
+	);
+   
+  	return $items;
+}
+
+function commerce_opay_commerce_payment_method_info() {
+	$payment_methods = array();
+	
+	$payment_methods['opay'] = array(
+		'base' => 'commerce_opay',
+		'title' => t('歐付寶'),
+		'terminal' => FALSE,
+		'offsite' => TRUE,
+		'offsite_autoredirect' => TRUE,
+		'active' => TRUE,
+	);
+	
+	return $payment_methods;
+}
+
+/**
+ * 	Merchant Setup
+ */
+function commerce_opay_settings_form($settings = NULL) {
+    $form = array();
+  
+	$settings = (array) $settings + array(
+		'MerchantID' => '',
+		'HashKey' => '',
+		'HashIV' => '',
+	);
+	
+	$form['MerchantID']=array(
+		'#title'=>t('MerchantID'),	
+		'#type'=>'textfield',
+		'#description'=>t('Enter MerchantID'),
+		'#default_value' => $settings['MerchantID'],
+		'#required' => TRUE
+	);
+  
+	$form['HashKey']=array(
+		'#title'=>t('API HashKey'),	
+		'#type'=>'textfield',
+		'#description'=>t('Enter API HashKey'),
+		'#default_value' => $settings['HashKey'],
+		'#required' => TRUE
+	);
+  
+	$form['HashIV']=array(
+		'#title'=>t('API HashIV'),	
+		'#type'=>'textfield',
+		'#description'=>t('Enter API HashIV'),
+		'#default_value' => $settings['HashIV'],
+		'#required' => TRUE
+	);
+  
+	return $form;
+}
+
+/**
+ * 	Redirect to O'pay 
+ */
+function commerce_opay_redirect_form($form, &$form_state, $order, $payment_method) {
+
+	if (empty($payment_method['settings']['MerchantID'])) {
+		drupal_set_message(t($payment_method['settings']['MerchantID']), 'error');
+		return array();
+	}
+	
+	$form = array();
+	$wrapper = entity_metadata_wrapper('commerce_order', $order);
+	$amount = $wrapper->commerce_order_total->amount->value();
+
+	$settings = array(
+		// Return to the payment redirect page for processing successful payments.
+		'return' => url('checkout/' . $order->order_id . '/payment/return/' . $order->data['payment_redirect_key'], array('absolute' => TRUE)),
+		'notify' => url('commerce_opay/notify', array('absolute' => TRUE)),
+	);
+	$settings = $payment_method['settings'] + $settings;
+	
+	module_load_include('php', 'commerce_opay', 'AllPay.Payment.Integration');
+	try {      
+    	$obj = new AllInOne();
+
+		//O'pay 服務位置
+        $obj->ServiceURL = "https://payment-stage.allpay.com.tw/Cashier/AioCheckOut/V4"; 
+		//測試用 Hashkey，請自行帶入AllPay提供的HashKey	
+        $obj->HashKey =  $settings['HashKey'];            
+		//測試用 HashIV，請自行帶入AllPay提供的HashIV		
+        $obj->HashIV =  $settings['HashIV'];                                        											
+		//測試用 MerchantID，請自行帶入AllPay提供的MerchantID
+        $obj->MerchantID  = $settings['MerchantID'];                                                    					
+		//CheckMacValue加密類型，請固定填入1，使用SHA256加密
+        $obj->EncryptType = '1';                                                          												
+
+        //基本參數(請依系統規劃自行調整)
+		$order_number = $order->order_number;
+		//避免歐富寶提供的測試帳號 訂單重複問題
+        $MerchantTradeNo = date('Ydm').$order_number;
+		$returnUrl = url('commerce_opay/notify', array('absolute' => TRUE));     			
+		/*//收到付款完成通知的瀏覽器端網址		
+		$obj->Send['OrderResultURL'] = $returnUrl;       
+		//歐付寶返回按鈕導向的瀏覽器端網址		
+		//$obj->Send['ClientBackURL'] = '';      */ 		
+		//收到付款完成通知的伺服器端網址
+        $obj->Send['ReturnURL'] = $returnUrl; 		
+		//訂單編號		
+        $obj->Send['MerchantTradeNo'] = $MerchantTradeNo;            
+		//交易時間	
+        $obj->Send['MerchantTradeDate'] = date('Y/m/d H:i:s');    
+		//交易金額	
+        $obj->Send['TotalAmount'] = commerce_currency_amount_to_decimal($amount, 'TWD');  		
+		//交易描述
+        $obj->Send['TradeDesc'] = "測試商品";               
+		//付款方式:全功能		
+        $obj->Send['ChoosePayment'] = AllPayPaymentMethod::ALL;                                            
+		
+		
+        //訂單的商品資料
+		foreach ($wrapper-> commerce_line_items as $delta => $line_item_wrapper) {
+			$title = "";
+			$product_sku = $line_item_wrapper->line_item_label->value();
+			//避免運費空值錯誤
+			if($product_sku == "Shipping"){
+				$title = "運費";
+			}	
+			else{
+				$title = $line_item_wrapper->commerce_product->title->value();
+			}
+			$price = $line_item_wrapper->commerce_unit_price->amount->value()/100;
+			$quantity = $line_item_wrapper->quantity->value();
+			array_push($obj->Send['Items'], array('Name' => $title, 'Price' => (int)$price, 'Currency' => "元", 'Quantity' => (int)$quantity, 'URL' => "dedwed"));
+		}
+        $obj->CheckOut();	
+		
+    } catch (Exception $e) {
+		drupal_add_js('jQuery(document).ready(function () { console.log("'.$e->getMessage().'"); });', 'inline'); 
+    	echo $e->getMessage();
+    } 
+}
+
+/**
+ * Menu callback function to process O'pay's feedback notifications.
+ */
+function commerce_opay_process_notify() {
+	if (empty($_POST)) {
+		return FALSE;
+	}
+	module_load_include('php', 'commerce_opay', 'AllPay.Payment.Integration');
+	
+	//參考 O'pay API文件與範例
+	$payment_method = commerce_payment_method_instance_load('opay|commerce_payment_opay');
+	$settings = $payment_method['settings'] ;
+	$oPayment = new AllInOne();
+	$oPayment->HashKey =  $settings['HashKey'];                                     										
+    $oPayment->HashIV =  $settings['HashIV'];                                        											
+	$arFeedback = $oPayment->CheckOutFeedback();
+	if (sizeof($arFeedback) > 0) {
+		foreach ($arFeedback as $key => $value) {
+			switch ($key){
+				case "MerchantID": $szMerchantID = $value; break;
+				case "MerchantTradeNo": $szMerchantTradeNo = $value; break;
+				case "PaymentDate": $szPaymentDate = $value; break;
+				case "PaymentType": $szPaymentType = $value; break;
+				case "PaymentTypeChargeFee": $szPaymentTypeChargeFee = $value; break;
+				case "RtnCode": $szRtnCode = $value; break;
+				case "RtnMsg": $szRtnMsg = $value; break;
+				case "SimulatePaid": $szSimulatePaid = $value; break;
+				case "TradeAmt": $szTradeAmt = $value; break;
+				case "TradeDate": $szTradeDate = $value; break;
+				case "TradeNo": $szTradeNo = $value; break;
+				case "PayAmt": $szPayAmt = $value; break;
+				case "RedeemAmt": $szRedeemAmt = $value; break;
+				default: break;
+			}
+		}
+		//避免歐富寶提供的測試帳號 訂單重複問題
+		$szMerchantTradeNo = substr($szMerchantTradeNo, 8);	
+		$order = commerce_order_load($szMerchantTradeNo);
+		$transactions = commerce_payment_transaction_load_multiple(array(), array('remote_id' => $szTradeNo));
+		if (!empty($transactions)) {
+			$transaction = reset($transactions);
+		}
+		else {
+			$transaction = commerce_payment_transaction_new($payment_method['method_id'], $order->order_id);
+			$transaction->instance_id = $payment_method['instance_id'];
+		}
+		$transaction->amount = commerce_currency_decimal_to_amount($szTradeAmt, 'TWD');
+		$transaction->currency_code = 'TWD';
+		$transaction->remote_id = $szTradeNo;
+		$transaction->data['notify'] = $order;
+		if($szRtnCode == 1){	
+			commerce_order_status_update($order, 'completed');
+			$transaction->remote_status = $szRtnCode;
+			$transaction->status = COMMERCE_PAYMENT_STATUS_PENDING;
+			$transaction->message = $szPaymentType.":".$szRtnMsg;
+			commerce_payment_transaction_save($transaction);
+			//commerce_checkout_complete($order);
+		}
+		else{
+			commerce_order_status_update($order, 'fail');
+			$transaction->remote_status = $szRtnCode;
+			$transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+			$transaction->message = $szRtnMsg;
+			commerce_payment_transaction_save($transaction);
+		}
+	}
+}
+
