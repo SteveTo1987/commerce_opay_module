@@ -122,7 +122,7 @@ function commerce_opay_redirect_form($form, &$form_state, $order, $payment_metho
 		//交易金額	
         $obj->Send['TotalAmount'] = commerce_currency_amount_to_decimal($amount, 'TWD');  		
 		//交易描述
-        $obj->Send['TradeDesc'] = "測試商品";               
+        $obj->Send['TradeDesc'] = "商品";               
 		//付款方式:全功能		
         $obj->Send['ChoosePayment'] = AllPayPaymentMethod::ALL;                                            
 		
@@ -140,7 +140,9 @@ function commerce_opay_redirect_form($form, &$form_state, $order, $payment_metho
 			}
 			$price = $line_item_wrapper->commerce_unit_price->amount->value()/100;
 			$quantity = $line_item_wrapper->quantity->value();
-			array_push($obj->Send['Items'], array('Name' => $title, 'Price' => (int)$price, 'Currency' => "元", 'Quantity' => (int)$quantity, 'URL' => "dedwed"));
+			// 產品說明 url 此網址為測試用
+			$itemsUrl = "https://192.168.0.1:8080/";
+			array_push($obj->Send['Items'], array('Name' => $title, 'Price' => (int)$price, 'Currency' => "元", 'Quantity' => (int)$quantity, 'URL' => $itemsUrl));
 		}
         $obj->CheckOut();	
 		
